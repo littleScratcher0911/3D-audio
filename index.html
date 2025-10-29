@@ -33,7 +33,7 @@
     // Lade ein Soundbeispiel (Du kannst eine eigene Datei verwenden)
     async function loadAudio() {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const response = await fetch("https://cdn.pixabay.com/audio/2022/03/15/audio_115b9bfa8a.mp3");
+      const response = await fetch("audio-from-video.wav");
       const arrayBuffer = await response.arrayBuffer();
       buffer = await ctx.decodeAudioData(arrayBuffer);
     }
