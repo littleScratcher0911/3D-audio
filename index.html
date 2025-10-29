@@ -2,12 +2,15 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>3D Audio Demo</title>
+  <title>3D Audio Demo - Robust</title>
   <style>
     body { background: #222; color: #fff; font-family: sans-serif; text-align: center; }
-    #container { margin: 32px auto; width: 500px; }
-    canvas { background: #333; display: block; margin: 0 auto; border: 2px solid #666; }
-    #controls { margin-top: 16px; }
+    #container { margin: 16px auto; width: 540px; }
+    canvas { background: #333; display: block; margin: 12px auto; border: 2px solid #666; }
+    #controls { margin-top: 8px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+    #status { margin-top:12px; color:#ffa; }
+    #fileInput { color: #000; }
+    button { padding:6px 10px; }
   </style>
 </head>
 <body>
@@ -17,51 +20,212 @@
     <div id="controls">
       <button id="play">Play Sound</button>
       <button id="stop">Stop</button>
+      <button id="testTone">Test Tone</button>
+      <input id="fileInput" type="file" accept="audio/*">
     </div>
     <p>
       Ziehe den Punkt über die Fläche.<br>
       Die Position bestimmt, woher das Geräusch kommt.<br>
       <small>(Kopfhörer empfohlen!)</small>
     </p>
+    <div id="status">Status: Bereit</div>
   </div>
-  <script>
-    // Audio-Konfiguration
-    let ctx = null, source = null, panner = null, gainNode = null;
-    let playing = false;
-    let buffer = null;
 
-    // Lade ein Soundbeispiel (Du kannst eine eigene Datei verwenden)
-    async function loadAudio() {
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const response = await fetch("audio-from-video.wav");
-      const arrayBuffer = await response.arrayBuffer();
-      buffer = await ctx.decodeAudioData(arrayBuffer);
+  <script>
+    // --------------------
+    // State / Audio Vars
+    // --------------------
+    let audioCtx = null;
+    let source = null;         // BufferSource
+    let oscillator = null;     // Fallback test tone
+    let panner = null;
+    let gainNode = null;
+    let buffer = null;
+    let playing = false;
+    let usingOscillator = false;
+
+    const statusEl = document.getElementById('status');
+
+    function setStatus(msg) {
+      statusEl.textContent = "Status: " + msg;
+      console.log("[STATUS]", msg);
     }
 
-    async function playAudio() {
-      if (!ctx) await loadAudio();
-      if (playing) return;
-      source = ctx.createBufferSource();
-      source.buffer = buffer;
-      panner = ctx.createPanner();
-      panner.panningModel = 'HRTF';
-      panner.distanceModel = 'linear';
-      panner.refDistance = 1;
-      panner.maxDistance = 10;
-      gainNode = ctx.createGain();
-      source.connect(panner).connect(gainNode).connect(ctx.destination);
-      source.loop = true;
-      source.start();
-      playing = true;
-      updatePanner();
+    // --------------------
+    // Utilities
+    // --------------------
+    async function ensureAudioContext() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        console.log("AudioContext created:", audioCtx);
+      }
+      // resume on user gesture if suspended
+      if (audioCtx.state === 'suspended') {
+        try { await audioCtx.resume(); console.log("audioCtx resumed"); } catch(e){ console.warn("resume failed", e); }
+      }
+      return audioCtx;
+    }
+
+    async function loadAudioFromUrl(url = "audio-from-video.wav") {
+      setStatus("Lade " + url + " ...");
+      try {
+        await ensureAudioContext();
+      } catch (e) {
+        setStatus("AudioContext konnte nicht erstellt werden");
+        throw e;
+      }
+
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          throw new Error("Fetch failed: " + resp.status + " " + resp.statusText);
+        }
+        const arrayBuffer = await resp.arrayBuffer();
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+        buffer = decoded;
+        setStatus("Audio geladen: Dauer " + buffer.duration.toFixed(2) + "s");
+        console.log("Audio buffer decoded:", buffer);
+        return buffer;
+      } catch (err) {
+        console.error("loadAudioFromUrl error:", err);
+        setStatus("Fehler beim Laden (verwende Datei-Input oder Testton)");
+        throw err;
+      }
+    }
+
+    function loadAudioFromFile(file) {
+      return new Promise(async (resolve, reject) => {
+        if (!file) { reject(new Error("Keine Datei")); return; }
+        setStatus("Lese Datei: " + file.name);
+        try { await ensureAudioContext(); } catch(e){ reject(e); return; }
+
+        const fr = new FileReader();
+        fr.onload = async () => {
+          try {
+            const arrayBuffer = fr.result;
+            const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+            buffer = decoded;
+            setStatus("Datei geladen: " + file.name + " (" + buffer.duration.toFixed(2) + "s)");
+            console.log("Decoded from file:", file.name, buffer);
+            resolve(buffer);
+          } catch (err) {
+            console.error("decodeAudioData failed:", err);
+            setStatus("Fehler beim Dekodieren der Datei");
+            reject(err);
+          }
+        };
+        fr.onerror = (e) => {
+          console.error("FileReader error", e);
+          setStatus("Fehler beim Lesen der Datei");
+          reject(e);
+        };
+        fr.readAsArrayBuffer(file);
+      });
+    }
+
+    // --------------------
+    // Playback
+    // --------------------
+    function setupPannerAndGain() {
+      panner = audioCtx.createPanner();
+      // Try set properties, ignore if not supported
+      try {
+        panner.panningModel = 'HRTF';
+        panner.distanceModel = 'linear';
+        panner.refDistance = 1;
+        panner.maxDistance = 10;
+      } catch(e){ console.warn("panner property set failed", e); }
+
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1;
+
+      // connect in correct order later depending on source type
+    }
+
+    function playBuffer() {
+      if (!buffer) {
+        console.warn("No buffer to play");
+        setStatus("Kein Audio geladen (lade Datei oder URL oder benutze Testton)");
+        return;
+      }
+      try {
+        if (!audioCtx) return;
+        source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        setupPannerAndGain();
+        source.connect(panner);
+        panner.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        source.start(0);
+        playing = true;
+        usingOscillator = false;
+        setStatus("Wiedergabe gestartet");
+        updatePanner(); // initial position
+        source.onended = () => { playing = false; setStatus("Beendet"); };
+      } catch (e) {
+        console.error("playBuffer error", e);
+        setStatus("Fehler beim Abspielen");
+      }
+    }
+
+    function playOscillator() {
+      try {
+        ensureAudioContext();
+      } catch(e){
+        setStatus("AudioContext nicht verfügbar");
+        return;
+      }
+      try {
+        oscillator = audioCtx.createOscillator();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = 440;
+        setupPannerAndGain();
+        oscillator.connect(panner);
+        panner.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.start();
+        playing = true;
+        usingOscillator = true;
+        setStatus("Testton läuft");
+        updatePanner();
+      } catch (e) {
+        console.error("playOscillator error", e);
+        setStatus("Fehler beim Testton");
+      }
     }
 
     function stopAudio() {
-      if (source) source.stop();
+      try {
+        if (usingOscillator && oscillator) {
+          oscillator.stop();
+          oscillator.disconnect();
+          oscillator = null;
+        }
+        if (source) {
+          try { source.stop(); } catch (e) { /* may already be stopped */ }
+          try { source.disconnect(); } catch(e) {}
+          source = null;
+        }
+        if (panner) {
+          try { panner.disconnect(); } catch(e) {}
+          panner = null;
+        }
+        if (gainNode) {
+          try { gainNode.disconnect(); } catch(e) {}
+          gainNode = null;
+        }
+      } catch (e) {
+        console.warn("stopAudio error", e);
+      }
       playing = false;
+      usingOscillator = false;
+      setStatus("Gestoppt");
     }
 
-    // Canvas-Konfiguration
+    // --------------------
+    // Panner update & Canvas
+    // --------------------
     const canvas = document.getElementById("area");
     const ctx2d = canvas.getContext("2d");
     const areaW = canvas.width, areaH = canvas.height;
@@ -100,19 +264,47 @@
     }
 
     function updatePanner() {
-      if (!panner) return;
+      if (!panner || !audioCtx) return;
       // Normiere Koordinaten: -1 bis 1
       let relX = (dot.x - center.x) / (areaW/2);
       let relY = (dot.y - center.y) / (areaH/2);
       // Web Audio: x=links/rechts, z=vor/hinten (neg. z ist vorne)
-      panner.positionX.value = relX * 2; // -2 bis 2
-      panner.positionY.value = 0;
-      panner.positionZ.value = relY * 2; // -2 bis 2
-      // Lautstärke verringern, je weiter hinten
-      if (gainNode) gainNode.gain.value = 1 - Math.abs(relY) * 0.5;
+      const posX = relX * 2; // -2 bis 2
+      const posY = 0;
+      const posZ = relY * 2; // -2 bis 2
+
+      if (panner.positionX && typeof panner.positionX.setValueAtTime === 'function') {
+        try {
+          const t = audioCtx.currentTime || 0;
+          panner.positionX.setValueAtTime(posX, t);
+          panner.positionY.setValueAtTime(posY, t);
+          panner.positionZ.setValueAtTime(posZ, t);
+        } catch (e) {
+          try { panner.setPosition(posX, posY, posZ); } catch(e2) { console.warn("panner set position failed", e2); }
+        }
+      } else {
+        try { panner.setPosition(posX, posY, posZ); } catch(e) {}
+      }
+
+      // Lautstärke verringern, je weiter hinten (aber mind. 0.05)
+      if (gainNode && gainNode.gain) {
+        const newGain = Math.max(0.05, 1 - Math.abs(relY) * 0.5);
+        try {
+          if (typeof gainNode.gain.setValueAtTime === 'function') {
+            gainNode.gain.setValueAtTime(newGain, audioCtx.currentTime || 0);
+          } else {
+            gainNode.gain.value = newGain;
+          }
+        } catch(e) {
+          try { gainNode.gain.value = newGain; } catch(e2) {}
+        }
+      }
+      console.log("panner update:", posX.toFixed(2), posZ.toFixed(2), "gain:", gainNode ? gainNode.gain.value : "n/a");
     }
 
-    // Drag & Drop Punkt
+    // --------------------
+    // Drag & Touch Handling
+    // --------------------
     canvas.addEventListener("mousedown", (e) => {
       let rect = canvas.getBoundingClientRect();
       let mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -128,12 +320,76 @@
     });
     window.addEventListener("mouseup", () => dragging = false);
 
-    // Buttons
-    document.getElementById("play").onclick = playAudio;
-    document.getElementById("stop").onclick = stopAudio;
+    canvas.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      let rect = canvas.getBoundingClientRect();
+      let mx = t.clientX - rect.left, my = t.clientY - rect.top;
+      if (Math.hypot(mx-dot.x, my-dot.y) <= dot.r) {
+        dragging = true;
+        e.preventDefault();
+      }
+    }, {passive:false});
+    canvas.addEventListener("touchmove", (e) => {
+      if (!dragging) return;
+      const t = e.touches[0];
+      let rect = canvas.getBoundingClientRect();
+      dot.x = Math.max(dot.r, Math.min(areaW-dot.r, t.clientX - rect.left));
+      dot.y = Math.max(dot.r, Math.min(areaH-dot.r, t.clientY - rect.top));
+      draw();
+      updatePanner();
+      e.preventDefault();
+    }, {passive:false});
+    window.addEventListener("touchend", () => dragging = false);
 
-    // Initial
+    // --------------------
+    // UI Bindings
+    // --------------------
+    document.getElementById("play").onclick = async () => {
+      setStatus("Starte Wiedergabe...");
+      try {
+        await ensureAudioContext();
+      } catch (e) {
+        setStatus("AudioContext konnte nicht erstellt werden");
+        return;
+      }
+      // Wenn Buffer bereits geladen -> spiele
+      if (buffer) { playBuffer(); return; }
+
+      // Versuch, Standard-Datei per fetch zu laden
+      try {
+        await loadAudioFromUrl();
+        if (buffer) { playBuffer(); return; }
+      } catch (e) {
+        // fetch/decoding schlug fehl -> weiche auf Testton hinweisen
+        setStatus("Konnte Audio nicht laden. Benutze Datei-Input oder Testton.");
+        console.warn("Fetch/Decode fehlgeschlagen, bitte Datei wählen oder Testton verwenden.");
+      }
+    };
+
+    document.getElementById("stop").onclick = () => { stopAudio(); };
+
+    document.getElementById("testTone").onclick = async () => {
+      try { await ensureAudioContext(); } catch(e){ setStatus("AudioContext Fehler"); return; }
+      stopAudio();
+      playOscillator();
+    };
+
+    document.getElementById("fileInput").addEventListener("change", async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      try {
+        await loadAudioFromFile(f);
+      } catch (err) {
+        console.error("file load failed", err);
+      }
+    });
+
+    // Initial draw
     draw();
+    setStatus("Bereit — Test Tone drücken, oder Datei laden.");
+
+    // Debug helper: if no audio, show console tips
+    console.log("Wenn kein Ton: 1) öffne DevTools Console 2) teste Test Tone 3) lade Datei oder benutze lokalen http-server (python -m http.server).");
   </script>
 </body>
 </html>
