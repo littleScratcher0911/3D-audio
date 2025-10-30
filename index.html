@@ -20,7 +20,7 @@
     <div id="controls">
       <button id="play">Play Sound</button>
       <button id="stop">Stop</button>
-      <button id="testTone">Test Tone</button>
+      <button id="testTone">Testton</button>
       <input id="fileInput" type="file" accept=".mp3, .m4a, .wav">
     </div>
     <p>
@@ -107,6 +107,7 @@
             buffer = decoded;
             setStatus("Datei geladen: " + file.name + " (" + buffer.duration.toFixed(2) + "s)");
             console.log("Decoded from file:", file.name, buffer);
+            // Kein Zurücksetzen des File-Inputs!
             resolve(buffer);
           } catch (err) {
             console.error("decodeAudioData failed:", err);
@@ -169,9 +170,9 @@
       }
     }
 
-    function playOscillator() {
+    async function playOscillator() {
       try {
-        ensureAudioContext();
+        await ensureAudioContext();
       } catch(e){
         setStatus("AudioContext nicht verfügbar");
         return;
@@ -371,7 +372,7 @@
     document.getElementById("testTone").onclick = async () => {
       try { await ensureAudioContext(); } catch(e){ setStatus("AudioContext Fehler"); return; }
       stopAudio();
-      playOscillator();
+      await playOscillator();
     };
 
     document.getElementById("fileInput").addEventListener("change", async (e) => {
@@ -386,10 +387,10 @@
 
     // Initial draw
     draw();
-    setStatus("Bereit — Test Tone drücken, oder Datei laden.");
+    setStatus("Bereit — Testton drücken, oder Datei laden.");
 
     // Debug helper: if no audio, show console tips
-    console.log("Wenn kein Ton: 1) öffne DevTools Console 2) teste Test Tone 3) lade Datei oder benutze lokalen http-server (python -m http.server).");
+    console.log("Wenn kein Ton: 1) öffne DevTools Console 2) teste Testton 3) lade Datei oder benutze lokalen http-server (python -m http.server).");
   </script>
 </body>
 </html>
